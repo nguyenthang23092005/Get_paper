@@ -2,14 +2,12 @@ import requests
 
 # Open Alex
 def decode_openalex_abstract(inverted_index):
-    """Chuyển inverted index của OpenAlex thành abstract dạng văn bản."""
     if not inverted_index:
         return None
-    # sắp xếp theo vị trí
     words = sorted([(pos, word) for word, positions in inverted_index.items() for pos in positions])
     return " ".join(word for pos, word in words)
 
-def search_openalex(query: str, rows: int = 10, date=None):
+def search_openalex(query: list, rows: int = 10, date=None):
     url = "https://api.openalex.org/works"
     params = {
         "search": query,
@@ -52,7 +50,7 @@ def search_openalex(query: str, rows: int = 10, date=None):
     return results
 
 # CrossRef
-def search_crossref(query: str, rows: int = 10, date=None):
+def search_crossref(query: list, rows: int = 10, date=None):
     url = "https://api.crossref.org/works"
     params = {
         "query": query,

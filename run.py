@@ -19,9 +19,8 @@ if not os.path.exists(ENV_PATH):
     open(ENV_PATH, "a").close()
     
 
-# key_word = "Non-Distructive testing"#"Pulsed Eddy Current"
-key_word = "machine learning"
-number_results = 30
+key_word = "Non-Destructive Testing"
+number_results = 100
 
 date = datetime.datetime.now().strftime("%Y-%m-%d")
 

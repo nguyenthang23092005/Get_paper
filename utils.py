@@ -164,12 +164,6 @@ def get_creds():
 
 # Hàm thực hiện ghi dữ liệu lên GG Docx
 def append_json_to_gdoc(df, date_str):
-    """
-    Cập nhật Google Docs:
-    - Nếu đã có tiêu đề 'Ngày <date_str>' thì xóa phần đó và ghi đè lại nội dung hôm nay.
-    - Nếu chưa có, thì thêm mới vào cuối tài liệu (không xóa các ngày cũ).
-    """
-
     creds = get_creds()
     service = build("docs", "v1", credentials=creds)
     doc = service.documents().get(documentId=DOCUMENT_ID).execute()
@@ -306,7 +300,6 @@ def append_json_to_gdoc(df, date_str):
 
 # Hàm ghi dữ liệu lên GG Docx
 def convert_latest_json_to_gdoc():
-    """Đọc file JSON hôm nay và ghi vào Google Docs."""
     latest_file = get_latest_json()  
     if not latest_file:
         print("⚠️ Không tìm thấy file JSON.")
@@ -408,17 +401,35 @@ def enrich_with_firecrawl(results):
 # Hàm thực hiện đánh giá liên quan
 def evaluate_paper_relevance(abstract, keywords):
     prompt = f"""
-    You are an expert in scientific literature analysis.
+    You are a senior researcher specialized in Non-Destructive Testing (NDT), Pulsed Eddy Current (PEC), 
+    and related electromagnetic or signal processing methods in engineering.
 
     Task:
-    Determine if the following abstract is related to the topic(s): {", ".join(keywords)} 
-    or Non-Destructive Testing.
+    1. Carefully read the abstract below.
+    2. Think step by step (silently) about whether the abstract’s main topic, method, or application 
+    is conceptually or methodologically related to any of the following:
+    - {", ".join(keywords)}
+    - Non-Destructive Testing (NDT)
+    - Pulsed Eddy Current (PEC)
+    3. If there is at least one clear or close relation, answer "YES". 
+    If there is no clear connection at all, answer "NO".
+    4. Double-check your decision consistency before finalizing.
 
-    Answer strictly with YES or NO only.
+    IMPORTANT:
+    - Think internally, but output ONLY one word: YES or NO.
+    - Do not provide explanation or reasoning.
 
-    Abstract:
+    Example guidance:
+    Abstract: "This paper applies pulsed eddy current sensing to detect corrosion in pipelines."
+    → Output: YES
+
+    Abstract: "This study uses seismic inversion for subsurface mapping."
+    → Output: NO
+
+    Now analyze the following abstract:
     {abstract}
     """
+
 
     try:
         response = client.models.generate_content(
@@ -469,15 +480,14 @@ def get_journal_rank(journal_name):
         url = f"https://api.openalex.org/sources?search={journal_name}"
         r = requests.get(url, timeout=10)
         data = r.json()
-        if "results" in data and len(data["results"]) > 0:
-            # Dữ liệu từ OpenAlex có thể chứa key khác — kiểm tra kỹ
-            rank = data["results"][0].get("best_quartile")
-            return rank or "Unknown"
-    except Exception:
-        return None
+        if "results" in data and data["results"]:
+            return data["results"][0].get("best_quartile", "Unknown")
+    except Exception as e:
+        print(f"[OpenAlex Error] {e}")
     return None
 
-# Hàm lấy h-index tác giả 
+
+# Hàm lấy h-index của author
 def get_author_hindex(author_name):
     try:
         url = f"https://api.semanticscholar.org/graph/v1/author/search?query={author_name}&limit=1"
@@ -485,110 +495,136 @@ def get_author_hindex(author_name):
         data = r.json()
         if "data" in data and data["data"]:
             author_id = data["data"][0]["authorId"]
-            author_url = f"https://api.semanticscholar.org/graph/v1/author/{author_id}?fields=hIndex"
-            detail = requests.get(author_url).json()
+            detail = requests.get(
+                f"https://api.semanticscholar.org/graph/v1/author/{author_id}?fields=hIndex",
+                timeout=10
+            ).json()
             return detail.get("hIndex")
-    except Exception:
-        return None
+    except Exception as e:
+        print(f"[SemanticScholar Error] {e}")
     return None
 
 
-# Hàm đánh giá chất lượng bài báo
-def evaluate_paper_quality(articles, keywords):
-    # --- Nếu là danh sách bài báo ---
-    if isinstance(articles, list):
-        results = []
-        for article in articles:
-            result = evaluate_paper_quality(article, keywords)
-            results.append(result)
-        return results
+# Hàm đánh giá chất lượng bài báo, jounal và arthur bằng llm
+def evaluate_paper_quality_llm(abstract):
+    prompt = f"""
+    You are a senior reviewer for high-impact engineering journals.
 
-    # --- Nếu chỉ là 1 bài báo ---
-    article = articles  # đổi tên cho dễ hiểu
+    Read the following abstract and rate its RESEARCH QUALITY from 0–100,
+    based on:
+    - Novelty and originality of the idea.
+    - Technical depth and clarity of methods.
+    - Contribution and scientific value.
+    - Writing clarity and coherence.
+
+    Output strictly as: "SCORE: <number>"
+
+    Abstract:
+    {abstract}
+    """
+    time.sleep(4)
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=GenerateContentConfig(temperature=0)
+        )
+        text = response.text.strip().upper()
+        match = re.search(r"SCORE[:\s]*([0-9]+)", text)
+        return int(match.group(1)) if match else 50
+    except Exception as e:
+        print(f"[Gemini Error - LLM Quality] {e}")
+        return 50
+    
+
+
+# Hàm đánh giá chất lượng
+def evaluate_paper_quality(article, keywords):
+    """
+    Đánh giá tổng thể chất lượng bài báo gồm:
+    - Journal rank (25%)
+    - Author h-index (25%)
+    - LLM đánh giá nội dung (50%)
+    """
+
+    if isinstance(article, list):
+        return [evaluate_paper_quality(a, keywords) for a in article]
+
     title = article.get("title", "Untitled")
     abstract = article.get("abstract", "").strip()
     authors = article.get("authors", "Not Available")
-    doi = article.get("doi", "")
     journal = article.get("journal", "")
 
-    # 1️⃣ Không có abstract
+    # ⚠️ Không có abstract
     if not abstract or abstract.lower() == "not available":
         article.update({
             "related": False,
             "score": 0,
-            "evaluation": "Không có abstract để đánh giá."
+            "evaluation": "❌ Không có abstract để đánh giá.",
+            "quality_level": "⚠️ Thiếu dữ liệu"
         })
         return article
 
-    # 2️⃣ Kiểm tra mức độ liên quan
-    relevance = evaluate_paper_relevance(abstract, keywords)
-    related = relevance.get("related", False)
-
-    if not related:
-        article.update({
-            "related": False,
-            "score": 0,
-            "evaluation": "❌ Không liên quan đến chủ đề."
-        })
-        return article
-
-    # 3️⃣ Đánh giá chất lượng
-    score = 0
     comments = []
 
-    # (a) Ranking của Journal
+    # --- 2️⃣ Journal (25%) ---
     journal_rank = get_journal_rank(journal)
-    if journal_rank:
-        rank_score = {
-            "Q1": 50, "Q2": 40, "Q3": 30, "Q4": 20,
-            "A*": 50, "A": 45, "B": 30, "C": 20
-        }.get(journal_rank, 10)
-        score += rank_score
-        comments.append(f"Journal '{journal}' có ranking {journal_rank} (+{rank_score} điểm).")
-    else:
-        comments.append(f"Không tìm thấy ranking cho journal '{journal}'. (-10 điểm)")
-        score -= 10
+    journal_score_map = {
+        "Q1": 100, "Q2": 80, "Q3": 60, "Q4": 40,
+        "A*": 100, "A": 90, "B": 70, "C": 50
+    }
+    raw_journal_score = journal_score_map.get(journal_rank, 30)
+    journal_score = raw_journal_score * 0.25 / 100 * 100  # quy đổi ra %
+    comments.append(f"🏫 Journal '{journal}' rank {journal_rank or 'Unknown'} (+{journal_score:.1f} điểm).")
 
-    # (b) H-index của tác giả đầu tiên
+    # --- 3️⃣ Author (25%) ---
     if authors == "Not Available":
-        comments.append("Không có thông tin tác giả (-10 điểm).")
-        score -= 10
+        author_score = 0
+        comments.append("👤 Không có thông tin tác giả (0 điểm).")
     else:
-        author_name = authors.split(",")[0]
-        h_index = get_author_hindex(author_name)
-        if h_index:
-            if h_index > 40:
-                score += 40
-                comments.append(f"Tác giả {author_name} có h-index {h_index} (+40 điểm).")
-            elif h_index > 20:
-                score += 25
-                comments.append(f"Tác giả {author_name} có h-index {h_index} (+25 điểm).")
-            else:
-                score += 10
-                comments.append(f"Tác giả {author_name} có h-index thấp ({h_index}) (+10 điểm).")
+        first_author = authors.split(",")[0].strip()
+        h_index = get_author_hindex(first_author)
+        if h_index is None:
+            author_score = 5
+            comments.append(f"👤 Không lấy được h-index của {first_author} (+5 điểm tạm).")
+        elif h_index >= 40:
+            author_score = 25
+            comments.append(f"👤 {first_author} có h-index cao ({h_index}) (+25 điểm).")
+        elif h_index >= 20:
+            author_score = 18
+            comments.append(f"👤 {first_author} có h-index trung bình ({h_index}) (+18 điểm).")
         else:
-            comments.append(f"Không lấy được h-index của {author_name} (-5 điểm).")
-            score -= 5
+            author_score = 10
+            comments.append(f"👤 {first_author} có h-index thấp ({h_index}) (+10 điểm).")
 
-    # (c) DOI hợp lệ
-    if doi and doi.startswith("https://doi.org/"):
-        score += 10
-        comments.append("DOI hợp lệ (+10 điểm).")
-    else:
-        comments.append("Không có DOI hợp lệ (-5 điểm).")
-        score -= 5
+    # --- 4️⃣ LLM (50%) ---
+    llm_raw = evaluate_paper_quality_llm(abstract)
+    llm_score = llm_raw * 0.5 / 100 * 100
+    comments.append(f"🤖 LLM đánh giá chất lượng abstract {llm_raw}/100 (+{llm_score:.1f} điểm).")
 
-    # --- Chuẩn hóa ---
-    score = max(0, min(score, 100))
+    # --- 5️⃣ Tổng điểm ---
+    total_score = round(journal_score + author_score + llm_score, 2)
+    total_score = min(total_score, 100)
 
-    # Cập nhật article gốc
+    # --- 6️⃣ Xếp loại ---
+    quality_level = (
+        "🏅 Xuất sắc" if total_score >= 85 else
+        "👍 Tốt" if total_score >= 70 else
+        "⚖️ Trung bình" if total_score >= 50 else
+        "⚠️ Yếu"
+    )
+
+    # --- 7️⃣ Cập nhật kết quả ---
     article.update({
         "related": True,
-        "score": score,
-        "evaluation": " | ".join(comments)
+        "journal_rank": journal_rank or "Unknown",
+        "score": total_score,
+        "evaluation": " | ".join(comments),
+        "quality_level": quality_level
     })
 
     return article
+
 
 
 # Hàm lấy top các bài báo được đánh giá hay nhất
