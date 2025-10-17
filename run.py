@@ -19,7 +19,8 @@ if not os.path.exists(ENV_PATH):
     open(ENV_PATH, "a").close()
     
 
-key_word = "Non-Destructive Testing"
+# key_word = "Non-Destructive Testing"
+key_word = '"non destructive testing" OR "nondestructive evaluation" OR "ultrasonic testing" OR "eddy current testing"'
 number_results = 100
 
 date = datetime.datetime.now().strftime("%Y-%m-%d")
